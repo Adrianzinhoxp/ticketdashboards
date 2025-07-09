@@ -76,74 +76,195 @@ class Database {
   constructor() {
     this.CONFIG_FILE = path.join(__dirname, "server-configs.json")
     this.TICKETS_FILE = path.join(__dirname, "closed-tickets.json")
+    this.BACKUP_DIR = path.join(__dirname, "backups")
     this.configs = this.loadConfigs()
     this.closedTickets = this.loadClosedTickets()
+    this.setupBackupSystem()
   }
 
-  loadConfigs() {
+  setupBackupSystem() {
+    // Criar diretório de backup se não existir
+    fs.ensureDirSync(this.BACKUP_DIR)
+
+    // Backup automático a cada 6 horas
+    setInterval(
+      () => {
+        this.createBackup()
+      },
+      6 * 60 * 60 * 1000,
+    )
+
+    // Backup inicial após 5 minutos
+    setTimeout(
+      () => {
+        this.createBackup()
+      },
+      5 * 60 * 1000,
+    )
+
+    console.log("📦 Sistema de backup automático configurado")
+  }
+
+  createBackup() {
     try {
-      if (fs.existsSync(this.CONFIG_FILE)) {
-        const data = fs.readFileSync(this.CONFIG_FILE, "utf8")
-        return JSON.parse(data)
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-")
+      const backupFile = path.join(this.BACKUP_DIR, `tickets-backup-${timestamp}.json`)
+
+      const backupData = {
+        timestamp: new Date().toISOString(),
+        totalTickets: this.closedTickets.length,
+        tickets: this.closedTickets,
+        configs: this.configs,
+      }
+
+      fs.writeFileSync(backupFile, JSON.stringify(backupData, null, 2))
+
+      // Manter apenas os últimos 30 backups
+      this.cleanOldBackups()
+
+      console.log(`📦 Backup criado: ${backupFile} (${this.closedTickets.length} tickets)`)
+    } catch (error) {
+      console.error("❌ Erro ao criar backup:", error)
+    }
+  }
+
+  cleanOldBackups() {
+    try {
+      const backupFiles = fs
+        .readdirSync(this.BACKUP_DIR)
+        .filter((file) => file.startsWith("tickets-backup-"))
+        .sort()
+
+      // Manter apenas os últimos 30 backups
+      if (backupFiles.length > 30) {
+        const filesToDelete = backupFiles.slice(0, backupFiles.length - 30)
+        filesToDelete.forEach((file) => {
+          fs.unlinkSync(path.join(this.BACKUP_DIR, file))
+        })
+        console.log(`🗑️ ${filesToDelete.length} backups antigos removidos`)
       }
     } catch (error) {
-      console.error("Erro ao carregar configurações:", error)
+      console.error("❌ Erro ao limpar backups antigos:", error)
     }
-    return {}
-  }
-
-  loadClosedTickets() {
-    try {
-      if (fs.existsSync(this.TICKETS_FILE)) {
-        const data = fs.readFileSync(this.TICKETS_FILE, "utf8")
-        return JSON.parse(data)
-      }
-    } catch (error) {
-      console.error("Erro ao carregar tickets fechados:", error)
-    }
-    return []
-  }
-
-  saveConfigs() {
-    try {
-      fs.writeFileSync(this.CONFIG_FILE, JSON.stringify(this.configs, null, 2))
-    } catch (error) {
-      console.error("Erro ao salvar configurações:", error)
-    }
-  }
-
-  saveClosedTickets() {
-    try {
-      fs.writeFileSync(this.TICKETS_FILE, JSON.stringify(this.closedTickets, null, 2))
-    } catch (error) {
-      console.error("Erro ao salvar tickets fechados:", error)
-    }
-  }
-
-  setServerConfig(guildId, config) {
-    this.configs[guildId] = config
-    this.saveConfigs()
-  }
-
-  getServerConfig(guildId) {
-    return this.configs[guildId] || null
   }
 
   addClosedTicket(ticketData) {
+    // Adicionar timestamp de salvamento
+    ticketData.savedAt = new Date().toISOString()
+    ticketData.backupId = `backup-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
     this.closedTickets.unshift(ticketData)
-    if (this.closedTickets.length > 1000) {
-      this.closedTickets = this.closedTickets.slice(0, 1000)
-    }
+
+    // REMOVER LIMITE - Salvar TODOS os tickets
+    // Comentar a linha que limitava a 1000 tickets
+    // if (this.closedTickets.length > 1000) {
+    //   this.closedTickets = this.closedTickets.slice(0, 1000)
+    // }
+
     this.saveClosedTickets()
-    console.log(`📝 Ticket ${ticketData.id} salvo no dashboard`)
+    console.log(`📝 Ticket ${ticketData.id} salvo permanentemente (Total: ${this.closedTickets.length})`)
+
+    // Criar backup imediato a cada 50 tickets novos
+    if (this.closedTickets.length % 50 === 0) {
+      this.createBackup()
+    }
   }
 
-  getClosedTickets() {
-    return this.closedTickets
+  // Método para recuperar backup
+  restoreFromBackup(backupFileName) {
+    try {
+      const backupPath = path.join(this.BACKUP_DIR, backupFileName)
+      if (!fs.existsSync(backupPath)) {
+        throw new Error("Arquivo de backup não encontrado")
+      }
+
+      const backupData = JSON.parse(fs.readFileSync(backupPath, "utf8"))
+      this.closedTickets = backupData.tickets || []
+      this.configs = backupData.configs || {}
+
+      this.saveClosedTickets()
+      this.saveConfigs()
+
+      console.log(`✅ Backup restaurado: ${this.closedTickets.length} tickets recuperados`)
+      return true
+    } catch (error) {
+      console.error("❌ Erro ao restaurar backup:", error)
+      return false
+    }
   }
 
-  getTicketById(ticketId) {
-    return this.closedTickets.find((ticket) => ticket.id === ticketId)
+  // Método para listar backups
+  listBackups() {
+    try {
+      const backupFiles = fs
+        .readdirSync(this.BACKUP_DIR)
+        .filter((file) => file.startsWith("tickets-backup-"))
+        .sort()
+        .reverse() // Mais recentes primeiro
+
+      return backupFiles.map((file) => {
+        const stats = fs.statSync(path.join(this.BACKUP_DIR, file))
+        return {
+          filename: file,
+          size: stats.size,
+          created: stats.birthtime,
+          modified: stats.mtime,
+        }
+      })
+    } catch (error) {
+      console.error("❌ Erro ao listar backups:", error)
+      return []
+    }
+  }
+
+  // Método para exportar todos os dados
+  exportAllData() {
+    try {
+      const exportData = {
+        exportedAt: new Date().toISOString(),
+        totalTickets: this.closedTickets.length,
+        tickets: this.closedTickets,
+        configs: this.configs,
+        statistics: this.getDetailedStats(),
+      }
+
+      const exportFile = path.join(__dirname, `full-export-${Date.now()}.json`)
+      fs.writeFileSync(exportFile, JSON.stringify(exportData, null, 2))
+
+      console.log(`📤 Exportação completa criada: ${exportFile}`)
+      return exportFile
+    } catch (error) {
+      console.error("❌ Erro ao exportar dados:", error)
+      return null
+    }
+  }
+
+  // Estatísticas detalhadas
+  getDetailedStats() {
+    const tickets = this.closedTickets
+    const now = new Date()
+
+    return {
+      total: tickets.length,
+      byType: tickets.reduce((acc, ticket) => {
+        acc[ticket.type] = (acc[ticket.type] || 0) + 1
+        return acc
+      }, {}),
+      byStatus: tickets.reduce((acc, ticket) => {
+        acc[ticket.status] = (acc[ticket.status] || 0) + 1
+        return acc
+      }, {}),
+      byMonth: tickets.reduce((acc, ticket) => {
+        const month = new Date(ticket.createdAt).toISOString().substr(0, 7)
+        acc[month] = (acc[month] || 0) + 1
+        return acc
+      }, {}),
+      oldestTicket: tickets[tickets.length - 1]?.createdAt,
+      newestTicket: tickets[0]?.createdAt,
+      averageMessagesPerTicket:
+        tickets.length > 0 ? tickets.reduce((sum, t) => sum + (t.messages?.length || 0), 0) / tickets.length : 0,
+      totalMessages: tickets.reduce((sum, t) => sum + (t.messages?.length || 0), 0),
+    }
   }
 }
 
@@ -909,6 +1030,14 @@ client.once("ready", () => {
   DiscloudMonitor.logStartup()
   console.log(`✅ Bot online como ${client.user.tag}!`)
 
+  // Mostrar estatísticas de tickets existentes
+  const stats = database.getDetailedStats()
+  console.log(`📊 Tickets carregados: ${stats.total}`)
+  console.log(`💬 Total de mensagens: ${stats.totalMessages}`)
+  if (stats.oldestTicket) {
+    console.log(`📅 Primeiro ticket: ${new Date(stats.oldestTicket).toLocaleDateString("pt-BR")}`)
+  }
+
   const dashboardUrl =
     process.env.RENDER_EXTERNAL_URL || process.env.RAILWAY_STATIC_URL || `http://localhost:${process.env.PORT || 3000}`
   console.log(`🌐 Dashboard URL: ${dashboardUrl}`)
@@ -952,6 +1081,22 @@ async function registerSlashCommands() {
       name: "dashboard",
       description: "Mostra o link do dashboard de tickets",
     },
+    {
+      name: "backup-create",
+      description: "Cria um backup manual dos tickets",
+    },
+    {
+      name: "backup-list",
+      description: "Lista todos os backups disponíveis",
+    },
+    {
+      name: "export-all",
+      description: "Exporta todos os dados dos tickets",
+    },
+    {
+      name: "ticket-stats",
+      description: "Mostra estatísticas detalhadas dos tickets",
+    },
   ]
 
   try {
@@ -982,6 +1127,14 @@ client.on("interactionCreate", async (interaction) => {
         await configureTicketChannel(interaction)
       } else if (commandName === "dashboard") {
         await showDashboard(interaction)
+      } else if (commandName === "backup-create") {
+        await createManualBackup(interaction)
+      } else if (commandName === "backup-list") {
+        await listBackups(interaction)
+      } else if (commandName === "export-all") {
+        await exportAllData(interaction)
+      } else if (commandName === "ticket-stats") {
+        await showDetailedStats(interaction)
       }
     }
 
@@ -1606,6 +1759,201 @@ async function handleRemoveMemberModal(interaction) {
     console.error("Erro ao remover membro:", error)
     await safeReply(interaction, {
       content: "❌ Usuário não encontrado ou erro ao remover. Verifique se o ID está correto.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+}
+
+async function createManualBackup(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return await safeReply(interaction, {
+      content: "❌ Você não tem permissão para criar backups.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+
+  try {
+    await safeReply(interaction, {
+      content: "📦 Criando backup manual...",
+      flags: MessageFlags.Ephemeral,
+    })
+
+    database.createBackup()
+    const stats = database.getDetailedStats()
+
+    const embed = new EmbedBuilder()
+      .setTitle("📦 Backup Manual Criado")
+      .setDescription(`Backup criado com sucesso!
+
+**📊 Dados salvos:**
+• **Total de tickets:** ${stats.total}
+• **Total de mensagens:** ${stats.totalMessages}
+• **Tipos de tickets:** ${Object.entries(stats.byType)
+        .map(([type, count]) => `${type}: ${count}`)
+        .join(", ")}
+
+**📁 Localização:** \`/backups/\`
+**🕒 Criado em:** <t:${Math.floor(Date.now() / 1000)}:F>`)
+      .setColor("#00ff00")
+      .setFooter({ text: "Sistema de Backup Automático" })
+      .setTimestamp()
+
+    await interaction.followUp({
+      embeds: [embed],
+      flags: MessageFlags.Ephemeral,
+    })
+  } catch (error) {
+    console.error("Erro ao criar backup manual:", error)
+    await safeReply(interaction, {
+      content: "❌ Erro ao criar backup manual.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+}
+
+async function listBackups(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return await safeReply(interaction, {
+      content: "❌ Você não tem permissão para ver backups.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+
+  try {
+    const backups = database.listBackups()
+
+    if (backups.length === 0) {
+      return await safeReply(interaction, {
+        content: "📦 Nenhum backup encontrado.",
+        flags: MessageFlags.Ephemeral,
+      })
+    }
+
+    const backupList = backups
+      .slice(0, 10)
+      .map((backup, index) => {
+        const sizeKB = Math.round(backup.size / 1024)
+        const date = backup.created.toLocaleString("pt-BR")
+        return `**${index + 1}.** \`${backup.filename}\`\n   📅 ${date} • 📦 ${sizeKB}KB`
+      })
+      .join("\n\n")
+
+    const embed = new EmbedBuilder()
+      .setTitle("📦 Lista de Backups")
+      .setDescription(`**Últimos ${Math.min(backups.length, 10)} backups:**
+
+${backupList}
+
+${backups.length > 10 ? `\n*... e mais ${backups.length - 10} backups*` : ""}
+
+**📊 Total de backups:** ${backups.length}`)
+      .setColor("#0099ff")
+      .setFooter({ text: "Sistema de Backup Automático" })
+      .setTimestamp()
+
+    await safeReply(interaction, {
+      embeds: [embed],
+      flags: MessageFlags.Ephemeral,
+    })
+  } catch (error) {
+    console.error("Erro ao listar backups:", error)
+    await safeReply(interaction, {
+      content: "❌ Erro ao listar backups.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+}
+
+async function exportAllData(interaction) {
+  if (!interaction.member.permissions.has(PermissionFlagsBits.ManageChannels)) {
+    return await safeReply(interaction, {
+      content: "❌ Você não tem permissão para exportar dados.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+
+  try {
+    await safeReply(interaction, {
+      content: "📤 Exportando todos os dados...",
+      flags: MessageFlags.Ephemeral,
+    })
+
+    const exportFile = database.exportAllData()
+    const stats = database.getDetailedStats()
+
+    if (!exportFile) {
+      return await interaction.followUp({
+        content: "❌ Erro ao exportar dados.",
+        flags: MessageFlags.Ephemeral,
+      })
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle("📤 Exportação Completa")
+      .setDescription(`Todos os dados foram exportados com sucesso!
+
+**📊 Dados exportados:**
+• **Total de tickets:** ${stats.total}
+• **Total de mensagens:** ${stats.totalMessages}
+• **Período:** ${stats.oldestTicket ? new Date(stats.oldestTicket).toLocaleDateString("pt-BR") : "N/A"} até ${stats.newestTicket ? new Date(stats.newestTicket).toLocaleDateString("pt-BR") : "N/A"}
+
+**📁 Arquivo:** \`${path.basename(exportFile)}\`
+**🕒 Exportado em:** <t:${Math.floor(Date.now() / 1000)}:F>
+
+*O arquivo contém todos os transcripts, configurações e estatísticas.*`)
+      .setColor("#00ff00")
+      .setFooter({ text: "Exportação Completa de Dados" })
+      .setTimestamp()
+
+    await interaction.followUp({
+      embeds: [embed],
+      flags: MessageFlags.Ephemeral,
+    })
+  } catch (error) {
+    console.error("Erro ao exportar dados:", error)
+    await safeReply(interaction, {
+      content: "❌ Erro ao exportar dados.",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+}
+
+async function showDetailedStats(interaction) {
+  try {
+    const stats = database.getDetailedStats()
+
+    const embed = new EmbedBuilder()
+      .setTitle("📊 Estatísticas Detalhadas dos Tickets")
+      .setDescription(`**📈 Resumo Geral:**
+• **Total de tickets:** ${stats.total}
+• **Total de mensagens:** ${stats.totalMessages}
+• **Média de mensagens por ticket:** ${stats.averageMessagesPerTicket.toFixed(1)}
+
+**📋 Por Tipo:**
+${Object.entries(stats.byType)
+  .map(([type, count]) => `• **${type}:** ${count}`)
+  .join("\n")}
+
+**✅ Por Status:**
+${Object.entries(stats.byStatus)
+  .map(([status, count]) => `• **${status}:** ${count}`)
+  .join("\n")}
+
+**📅 Período:**
+• **Primeiro ticket:** ${stats.oldestTicket ? new Date(stats.oldestTicket).toLocaleDateString("pt-BR") : "N/A"}
+• **Último ticket:** ${stats.newestTicket ? new Date(stats.newestTicket).toLocaleDateString("pt-BR") : "N/A"}`)
+      .setColor("#0099ff")
+      .setFooter({ text: "Estatísticas em Tempo Real" })
+      .setTimestamp()
+
+    await safeReply(interaction, {
+      embeds: [embed],
+      flags: MessageFlags.Ephemeral,
+    })
+  } catch (error) {
+    console.error("Erro ao mostrar estatísticas:", error)
+    await safeReply(interaction, {
+      content: "❌ Erro ao carregar estatísticas.",
       flags: MessageFlags.Ephemeral,
     })
   }
