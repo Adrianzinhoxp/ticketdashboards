@@ -12,20 +12,53 @@ class WebServer {
   }
 
   setupMiddleware() {
-    this.app.use(cors())
-    this.app.use(express.json())
+    // CORS configurado para Render
+    this.app.use(
+      cors({
+        origin: "*",
+        methods: ["GET", "POST", "PUT", "DELETE"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+      }),
+    )
+
+    this.app.use(express.json({ limit: "10mb" }))
+    this.app.use(express.urlencoded({ extended: true, limit: "10mb" }))
     this.app.use(express.static(path.join(__dirname, "public")))
+
+    // Middleware de log para debug
+    this.app.use((req, res, next) => {
+      console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`)
+      next()
+    })
   }
 
   setupRoutes() {
+    // Health check para Render
+    this.app.get("/health", (req, res) => {
+      res.status(200).json({
+        status: "OK",
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+      })
+    })
+
     // API Routes
     this.app.get("/api/tickets", (req, res) => {
       try {
         const tickets = database.getClosedTickets()
-        res.json(tickets)
+        res.json({
+          success: true,
+          data: tickets,
+          count: tickets.length,
+        })
       } catch (error) {
         console.error("Erro ao buscar tickets:", error)
-        res.status(500).json({ error: "Erro interno do servidor" })
+        res.status(500).json({
+          success: false,
+          error: "Erro interno do servidor",
+          message: error.message,
+        })
       }
     })
 
@@ -33,12 +66,22 @@ class WebServer {
       try {
         const ticket = database.getTicketById(req.params.id)
         if (!ticket) {
-          return res.status(404).json({ error: "Ticket não encontrado" })
+          return res.status(404).json({
+            success: false,
+            error: "Ticket não encontrado",
+          })
         }
-        res.json(ticket)
+        res.json({
+          success: true,
+          data: ticket,
+        })
       } catch (error) {
         console.error("Erro ao buscar ticket:", error)
-        res.status(500).json({ error: "Erro interno do servidor" })
+        res.status(500).json({
+          success: false,
+          error: "Erro interno do servidor",
+          message: error.message,
+        })
       }
     })
 
@@ -57,12 +100,20 @@ class WebServer {
             return acc
           }, {}),
           recent: tickets.slice(0, 10),
+          lastUpdated: new Date().toISOString(),
         }
 
-        res.json(stats)
+        res.json({
+          success: true,
+          data: stats,
+        })
       } catch (error) {
         console.error("Erro ao buscar estatísticas:", error)
-        res.status(500).json({ error: "Erro interno do servidor" })
+        res.status(500).json({
+          success: false,
+          error: "Erro interno do servidor",
+          message: error.message,
+        })
       }
     })
 
@@ -71,17 +122,62 @@ class WebServer {
       res.sendFile(path.join(__dirname, "public", "index.html"))
     })
 
+    // API Info
+    this.app.get("/api", (req, res) => {
+      res.json({
+        name: "Discord Ticket Bot API",
+        version: "1.0.0",
+        endpoints: {
+          tickets: "/api/tickets",
+          stats: "/api/stats",
+          health: "/health",
+        },
+        documentation: "https://github.com/seu-usuario/ticket-bot",
+      })
+    })
+
     // 404 Handler
     this.app.use((req, res) => {
-      res.status(404).json({ error: "Rota não encontrada" })
+      res.status(404).json({
+        success: false,
+        error: "Rota não encontrada",
+        path: req.path,
+      })
+    })
+
+    // Error Handler
+    this.app.use((error, req, res, next) => {
+      console.error("Erro no servidor:", error)
+      res.status(500).json({
+        success: false,
+        error: "Erro interno do servidor",
+        message: process.env.NODE_ENV === "development" ? error.message : "Internal Server Error",
+      })
     })
   }
 
   start() {
-    this.app.listen(this.port, () => {
-      console.log(`🌐 Dashboard disponível em: http://localhost:${this.port}`)
-      console.log(`📊 API disponível em: http://localhost:${this.port}/api/tickets`)
+    const server = this.app.listen(this.port, "0.0.0.0", () => {
+      console.log(`🌐 Servidor web iniciado!`)
+      console.log(`📍 Local: http://localhost:${this.port}`)
+
+      if (process.env.RENDER_EXTERNAL_URL) {
+        console.log(`🌍 Público: ${process.env.RENDER_EXTERNAL_URL}`)
+      }
+
+      console.log(`📊 API: http://localhost:${this.port}/api`)
+      console.log(`❤️ Health: http://localhost:${this.port}/health`)
     })
+
+    // Graceful shutdown
+    process.on("SIGTERM", () => {
+      console.log("🔄 Encerrando servidor web...")
+      server.close(() => {
+        console.log("✅ Servidor web encerrado")
+      })
+    })
+
+    return server
   }
 }
 

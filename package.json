@@ -2,14 +2,15 @@
   "name": "discord-ticket-bot-with-dashboard",
   "version": "1.0.0",
   "description": "Bot de Discord com sistema de tickets completo + Dashboard Web",
-  "main": "index.js",
+  "main": "start.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node start.js",
+    "dev": "node index.js",
     "setup": "node setup.js",
-    "build": "echo 'Build completed'"
+    "build": "echo 'Build completed successfully'",
+    "test": "echo 'No tests specified'"
   },
-  "keywords": ["discord", "bot", "tickets", "javascript", "dashboard"],
+  "keywords": ["discord", "bot", "tickets", "javascript", "dashboard", "render"],
   "author": "Seu Nome",
   "license": "MIT",
   "dependencies": {
@@ -22,6 +23,7 @@
     "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
   }
 }
