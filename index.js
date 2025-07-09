@@ -14,21 +14,233 @@ const {
   MessageFlags,
 } = require("discord.js")
 
-const DiscloudMonitor = require("./utils/discloud-monitor")
-const AutoCleanup = require("./utils/cleanup")
-const WebServer = require("./web-server")
-const database = require("./database")
+const express = require("express")
+const cors = require("cors")
+const path = require("path")
+const fs = require("fs-extra")
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-  ],
-})
+// ==================== CLASSES UTILITÁRIAS ====================
 
-// Configurações usando variáveis de ambiente (para Render)
+class DiscloudMonitor {
+  static logStartup() {
+    console.log("🚀 Iniciando bot no Render...")
+    console.log(`📊 Memória inicial: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`)
+    console.log(`🌐 Ambiente: ${process.env.NODE_ENV || "development"}`)
+    console.log(`⚡ Node.js: ${process.version}`)
+  }
+
+  static logSuccess(message) {
+    console.log(`✅ ${message}`)
+  }
+
+  static logError(error, context = "Erro geral") {
+    console.error(`❌ ${context}:`, error)
+  }
+
+  static startMemoryMonitoring() {
+    setInterval(() => {
+      const memUsage = process.memoryUsage()
+      const heapUsed = Math.round(memUsage.heapUsed / 1024 / 1024)
+
+      if (heapUsed > 400) {
+        console.warn(`⚠️ Alto uso de memória: ${heapUsed}MB`)
+      }
+    }, 300000) // Verifica a cada 5 minutos
+  }
+}
+
+class AutoCleanup {
+  constructor() {
+    this.startCleanup()
+  }
+
+  startCleanup() {
+    setInterval(() => {
+      this.performCleanup()
+    }, 1800000) // 30 minutos
+  }
+
+  performCleanup() {
+    try {
+      if (global.gc) {
+        global.gc()
+      }
+      console.log("🧹 Limpeza automática executada")
+    } catch (error) {
+      console.error("Erro na limpeza:", error)
+    }
+  }
+}
+
+class Database {
+  constructor() {
+    this.CONFIG_FILE = path.join(__dirname, "server-configs.json")
+    this.TICKETS_FILE = path.join(__dirname, "closed-tickets.json")
+    this.configs = this.loadConfigs()
+    this.closedTickets = this.loadClosedTickets()
+  }
+
+  loadConfigs() {
+    try {
+      if (fs.existsSync(this.CONFIG_FILE)) {
+        const data = fs.readFileSync(this.CONFIG_FILE, "utf8")
+        return JSON.parse(data)
+      }
+    } catch (error) {
+      console.error("Erro ao carregar configurações:", error)
+    }
+    return {}
+  }
+
+  loadClosedTickets() {
+    try {
+      if (fs.existsSync(this.TICKETS_FILE)) {
+        const data = fs.readFileSync(this.TICKETS_FILE, "utf8")
+        return JSON.parse(data)
+      }
+    } catch (error) {
+      console.error("Erro ao carregar tickets fechados:", error)
+    }
+    return []
+  }
+
+  saveConfigs() {
+    try {
+      fs.writeFileSync(this.CONFIG_FILE, JSON.stringify(this.configs, null, 2))
+    } catch (error) {
+      console.error("Erro ao salvar configurações:", error)
+    }
+  }
+
+  saveClosedTickets() {
+    try {
+      fs.writeFileSync(this.TICKETS_FILE, JSON.stringify(this.closedTickets, null, 2))
+    } catch (error) {
+      console.error("Erro ao salvar tickets fechados:", error)
+    }
+  }
+
+  setServerConfig(guildId, config) {
+    this.configs[guildId] = config
+    this.saveConfigs()
+  }
+
+  getServerConfig(guildId) {
+    return this.configs[guildId] || null
+  }
+
+  addClosedTicket(ticketData) {
+    this.closedTickets.unshift(ticketData)
+    if (this.closedTickets.length > 1000) {
+      this.closedTickets = this.closedTickets.slice(0, 1000)
+    }
+    this.saveClosedTickets()
+  }
+
+  getClosedTickets() {
+    return this.closedTickets
+  }
+
+  getTicketById(ticketId) {
+    return this.closedTickets.find((ticket) => ticket.id === ticketId)
+  }
+}
+
+class WebServer {
+  constructor(database) {
+    this.app = express()
+    this.port = process.env.PORT || 3000
+    this.database = database
+    this.setupMiddleware()
+    this.setupRoutes()
+  }
+
+  setupMiddleware() {
+    this.app.use(cors())
+    this.app.use(express.json())
+    this.app.use(express.static(path.join(__dirname, "public")))
+  }
+
+  setupRoutes() {
+    // Health check
+    this.app.get("/health", (req, res) => {
+      res.status(200).json({
+        status: "OK",
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+      })
+    })
+
+    // API Routes
+    this.app.get("/api/tickets", (req, res) => {
+      try {
+        const tickets = this.database.getClosedTickets()
+        res.json(tickets)
+      } catch (error) {
+        console.error("Erro ao buscar tickets:", error)
+        res.status(500).json({ error: "Erro interno do servidor" })
+      }
+    })
+
+    this.app.get("/api/tickets/:id", (req, res) => {
+      try {
+        const ticket = this.database.getTicketById(req.params.id)
+        if (!ticket) {
+          return res.status(404).json({ error: "Ticket não encontrado" })
+        }
+        res.json(ticket)
+      } catch (error) {
+        console.error("Erro ao buscar ticket:", error)
+        res.status(500).json({ error: "Erro interno do servidor" })
+      }
+    })
+
+    this.app.get("/api/stats", (req, res) => {
+      try {
+        const tickets = this.database.getClosedTickets()
+        const stats = {
+          total: tickets.length,
+          byType: tickets.reduce((acc, ticket) => {
+            acc[ticket.type] = (acc[ticket.type] || 0) + 1
+            return acc
+          }, {}),
+          byStatus: tickets.reduce((acc, ticket) => {
+            acc[ticket.status] = (acc[ticket.status] || 0) + 1
+            return acc
+          }, {}),
+          recent: tickets.slice(0, 10),
+        }
+        res.json(stats)
+      } catch (error) {
+        console.error("Erro ao buscar estatísticas:", error)
+        res.status(500).json({ error: "Erro interno do servidor" })
+      }
+    })
+
+    // Dashboard Route
+    this.app.get("/", (req, res) => {
+      res.sendFile(path.join(__dirname, "public", "index.html"))
+    })
+
+    // 404 Handler
+    this.app.use((req, res) => {
+      res.status(404).json({ error: "Rota não encontrada" })
+    })
+  }
+
+  start() {
+    this.app.listen(this.port, "0.0.0.0", () => {
+      console.log(`🌐 Dashboard disponível em: http://localhost:${this.port}`)
+      if (process.env.RENDER_EXTERNAL_URL) {
+        console.log(`🌍 URL pública: ${process.env.RENDER_EXTERNAL_URL}`)
+      }
+      console.log(`📊 API disponível em: http://localhost:${this.port}/api/tickets`)
+    })
+  }
+}
+
+// ==================== CONFIGURAÇÕES ====================
+
 const CONFIG = {
   TOKEN: process.env.DISCORD_TOKEN || process.env.TOKEN,
   GUILD_ID: process.env.GUILD_ID,
@@ -48,10 +260,22 @@ if (!CONFIG.TOKEN || !CONFIG.GUILD_ID || !CONFIG.TICKET_CATEGORY_ID || !CONFIG.S
   process.exit(1)
 }
 
-// Armazenamento temporário de tickets
+// ==================== INICIALIZAÇÃO ====================
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
+  ],
+})
+
+const database = new Database()
 const activeTickets = new Map()
 
-// Função auxiliar para encontrar ticket pelo canal
+// ==================== FUNÇÕES AUXILIARES ====================
+
 function findTicketByChannel(channelId) {
   for (const [userId, ticketData] of activeTickets.entries()) {
     if (ticketData.channelId === channelId) {
@@ -61,7 +285,6 @@ function findTicketByChannel(channelId) {
   return null
 }
 
-// Função auxiliar para responder interações com tratamento de erro
 async function safeReply(interaction, options) {
   try {
     if (interaction.deferred || interaction.replied) {
@@ -71,7 +294,6 @@ async function safeReply(interaction, options) {
     }
   } catch (error) {
     console.error("Erro ao responder interação:", error)
-
     if (interaction.channel) {
       try {
         return await interaction.channel.send({
@@ -86,7 +308,6 @@ async function safeReply(interaction, options) {
   }
 }
 
-// Função para coletar mensagens do canal
 async function collectChannelMessages(channel) {
   const messages = []
   let lastMessageId = null
@@ -99,7 +320,6 @@ async function collectChannelMessages(channel) {
       }
 
       const fetchedMessages = await channel.messages.fetch(options)
-
       if (fetchedMessages.size === 0) break
 
       fetchedMessages.forEach((message) => {
@@ -115,7 +335,6 @@ async function collectChannelMessages(channel) {
       })
 
       lastMessageId = fetchedMessages.last().id
-
       if (fetchedMessages.size < 100) break
     }
   } catch (error) {
@@ -125,82 +344,23 @@ async function collectChannelMessages(channel) {
   return messages.reverse()
 }
 
-// Funções para modal de remoção de membro
-async function showRemoveMemberModal(interaction) {
-  try {
-    const modal = new ModalBuilder().setCustomId("remove_member_id").setTitle("Remover Membro do Ticket")
-
-    const userIdInput = new TextInputBuilder()
-      .setCustomId("user_id")
-      .setLabel("ID do Discord do usuário:")
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder("Cole o ID do Discord aqui...")
-      .setRequired(true)
-      .setMaxLength(20)
-
-    const firstActionRow = new ActionRowBuilder().addComponents(userIdInput)
-    modal.addComponents(firstActionRow)
-
-    await interaction.showModal(modal)
-  } catch (error) {
-    console.error("Erro ao mostrar modal de remoção:", error)
-    await safeReply(interaction, {
-      content: "❌ Erro ao abrir formulário. Tente novamente.",
-      flags: MessageFlags.Ephemeral,
-    })
-  }
-}
-
-async function handleRemoveMemberModal(interaction) {
-  const userId = interaction.fields.getTextInputValue("user_id")
-
-  try {
-    const member = await interaction.guild.members.fetch(userId)
-
-    // Remover permissões do canal
-    await interaction.channel.permissionOverwrites.delete(member.user)
-
-    const embed = new EmbedBuilder()
-      .setTitle("➖ Membro Removido")
-      .setDescription(`${member.user} foi removido do ticket por ${interaction.user}.`)
-      .setColor("#ff0000")
-      .setTimestamp()
-
-    await safeReply(interaction, {
-      embeds: [embed],
-    })
-  } catch (error) {
-    console.error("Erro ao remover membro:", error)
-    await safeReply(interaction, {
-      content: "❌ Usuário não encontrado ou erro ao remover. Verifique se o ID está correto.",
-      flags: MessageFlags.Ephemeral,
-    })
-  }
-}
+// ==================== EVENTOS DO BOT ====================
 
 client.once("ready", () => {
   DiscloudMonitor.logStartup()
   console.log(`✅ Bot online como ${client.user.tag}!`)
 
-  // URL do dashboard baseada no ambiente
   const dashboardUrl =
     process.env.RENDER_EXTERNAL_URL || process.env.RAILWAY_STATIC_URL || `http://localhost:${process.env.PORT || 3000}`
-
   console.log(`🌐 Dashboard URL: ${dashboardUrl}`)
 
-  // Iniciar monitoramento de memória
   DiscloudMonitor.startMemoryMonitoring()
-
-  // Iniciar sistema de limpeza
   new AutoCleanup()
 
-  // Iniciar servidor web
-  const webServer = new WebServer()
+  const webServer = new WebServer(database)
   webServer.start()
 
-  // Registrar comandos slash
   registerSlashCommands()
-
   DiscloudMonitor.logSuccess("Bot totalmente inicializado")
 })
 
@@ -245,7 +405,8 @@ async function registerSlashCommands() {
   }
 }
 
-// Manipulador de comandos slash
+// ==================== MANIPULADORES DE INTERAÇÃO ====================
+
 client.on("interactionCreate", async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
@@ -277,10 +438,6 @@ client.on("interactionCreate", async (interaction) => {
         await showAddMemberModal(interaction)
       } else if (interaction.customId === "remove_member_modal") {
         await showRemoveMemberModal(interaction)
-      } else if (interaction.customId === "warn_member") {
-        await warnMember(interaction)
-      } else if (interaction.customId === "rename_ticket") {
-        await renameTicket(interaction)
       }
     }
 
@@ -291,13 +448,10 @@ client.on("interactionCreate", async (interaction) => {
         await handleAddMemberModal(interaction)
       } else if (interaction.customId === "remove_member_id") {
         await handleRemoveMemberModal(interaction)
-      } else if (interaction.customId === "rename_ticket_id") {
-        await handleRenameTicketModal(interaction)
       }
     }
   } catch (error) {
     console.error("Erro no manipulador de interações:", error)
-
     try {
       await safeReply(interaction, {
         content: "❌ Ocorreu um erro ao processar sua solicitação. Tente novamente.",
@@ -308,6 +462,8 @@ client.on("interactionCreate", async (interaction) => {
     }
   }
 })
+
+// ==================== FUNÇÕES DOS COMANDOS ====================
 
 async function showDashboard(interaction) {
   const dashboardUrl =
@@ -323,13 +479,7 @@ async function showDashboard(interaction) {
 • 📈 Estatísticas em tempo real
 • 🔍 Sistema de busca e filtros
 • 💬 Visualização completa de transcripts
-• 📊 Relatórios por tipo e status
-
-**Como usar:**
-1. Acesse o link acima
-2. Visualize todos os tickets fechados
-3. Use os filtros para encontrar tickets específicos
-4. Clique em "Ver Transcript" para detalhes completos`)
+• 📊 Relatórios por tipo e status`)
     .setColor("#0099ff")
     .setFooter({ text: "Dashboard de Tickets • Sistema integrado" })
     .setTimestamp()
@@ -522,14 +672,8 @@ Seja muito bem-vindo(a) ao seu ticket! Nossa equipe estará aqui para te ajudar 
       .setLabel("➖ Remover Membro")
       .setStyle(ButtonStyle.Secondary)
 
-    const warnButton = new ButtonBuilder()
-      .setCustomId("warn_member")
-      .setLabel("⚠️ Avisar Membro")
-      .setStyle(ButtonStyle.Secondary)
-
     const buttonRow1 = new ActionRowBuilder().addComponents(closeButton, assumeButton, addMemberButton)
-
-    const buttonRow2 = new ActionRowBuilder().addComponents(removeMemberButton, warnButton)
+    const buttonRow2 = new ActionRowBuilder().addComponents(removeMemberButton)
 
     await ticketChannel.send({
       content: `${interaction.user} <@&${CONFIG.STAFF_ROLE_ID}>`,
@@ -770,55 +914,24 @@ async function handleAddMemberModal(interaction) {
   }
 }
 
-async function warnMember(interaction) {
-  const ticketInfo = findTicketByChannel(interaction.channel.id)
-
-  if (!ticketInfo) {
-    return await safeReply(interaction, {
-      content: "❌ Não foi possível encontrar o dono do ticket.",
-      flags: MessageFlags.Ephemeral,
-    })
-  }
-
-  const { userId: ticketUserId } = ticketInfo
-
-  const embed = new EmbedBuilder()
-    .setTitle("⚠️ Aviso ao Membro")
-    .setDescription(`<@${ticketUserId}>, você tem um ticket em aberto que precisa de sua atenção.
-    
-**Por favor:**
-• Responda às perguntas da equipe
-• Forneça as informações solicitadas
-• Mantenha-se ativo no ticket
-
-**Lembre-se:** Tickets inativos podem ser fechados automaticamente.`)
-    .setColor("#000000")
-    .setTimestamp()
-
-  await safeReply(interaction, {
-    content: `<@${ticketUserId}>`,
-    embeds: [embed],
-  })
-}
-
-async function renameTicket(interaction) {
+async function showRemoveMemberModal(interaction) {
   try {
-    const modal = new ModalBuilder().setCustomId("rename_ticket_id").setTitle("Renomear Ticket")
+    const modal = new ModalBuilder().setCustomId("remove_member_id").setTitle("Remover Membro do Ticket")
 
-    const newTitleInput = new TextInputBuilder()
-      .setCustomId("new_title")
-      .setLabel("Novo título do ticket:")
+    const userIdInput = new TextInputBuilder()
+      .setCustomId("user_id")
+      .setLabel("ID do Discord do usuário:")
       .setStyle(TextInputStyle.Short)
-      .setPlaceholder("Digite o novo título aqui...")
+      .setPlaceholder("Cole o ID do Discord aqui...")
       .setRequired(true)
-      .setMaxLength(100)
+      .setMaxLength(20)
 
-    const firstActionRow = new ActionRowBuilder().addComponents(newTitleInput)
+    const firstActionRow = new ActionRowBuilder().addComponents(userIdInput)
     modal.addComponents(firstActionRow)
 
     await interaction.showModal(modal)
   } catch (error) {
-    console.error("Erro ao mostrar modal de renomeação:", error)
+    console.error("Erro ao mostrar modal de remoção:", error)
     await safeReply(interaction, {
       content: "❌ Erro ao abrir formulário. Tente novamente.",
       flags: MessageFlags.Ephemeral,
@@ -826,42 +939,33 @@ async function renameTicket(interaction) {
   }
 }
 
-async function handleRenameTicketModal(interaction) {
-  const newTitle = interaction.fields.getTextInputValue("new_title")
-  const ticketInfo = findTicketByChannel(interaction.channel.id)
-
-  if (!ticketInfo) {
-    return await safeReply(interaction, {
-      content: "❌ Ticket não encontrado.",
-      flags: MessageFlags.Ephemeral,
-    })
-  }
-
-  const { ticket } = ticketInfo
+async function handleRemoveMemberModal(interaction) {
+  const userId = interaction.fields.getTextInputValue("user_id")
 
   try {
-    const ticketChannel = interaction.guild.channels.cache.get(ticket.channelId)
-    await ticketChannel.setName(newTitle)
+    const member = await interaction.guild.members.fetch(userId)
+    await interaction.channel.permissionOverwrites.delete(member.user)
 
     const embed = new EmbedBuilder()
-      .setTitle("🏷️ Ticket Renomeado")
-      .setDescription(`O ticket foi renomeado para **${newTitle}** por ${interaction.user}.`)
-      .setColor("#000000")
+      .setTitle("➖ Membro Removido")
+      .setDescription(`${member.user} foi removido do ticket por ${interaction.user}.`)
+      .setColor("#ff0000")
       .setTimestamp()
 
     await safeReply(interaction, {
       embeds: [embed],
     })
   } catch (error) {
-    console.error("Erro ao renomear ticket:", error)
+    console.error("Erro ao remover membro:", error)
     await safeReply(interaction, {
-      content: "❌ Erro ao renomear o ticket. Verifique se o bot tem as permissões necessárias.",
+      content: "❌ Usuário não encontrado ou erro ao remover. Verifique se o ID está correto.",
       flags: MessageFlags.Ephemeral,
     })
   }
 }
 
-// Manipulador de erros
+// ==================== MANIPULADORES DE ERRO ====================
+
 client.on("error", (error) => {
   DiscloudMonitor.logError(error, "Erro do cliente Discord")
 })
@@ -875,9 +979,11 @@ process.on("uncaughtException", (error) => {
   process.exit(1)
 })
 
-// Login do bot
+// ==================== LOGIN ====================
+
 client.login(CONFIG.TOKEN).catch((error) => {
   console.error("❌ Erro ao fazer login:")
   console.error("Verifique se o DISCORD_TOKEN está correto nas variáveis de ambiente")
+  console.error("Erro:", error.message)
   process.exit(1)
 })
