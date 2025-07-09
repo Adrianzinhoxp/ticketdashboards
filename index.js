@@ -461,7 +461,7 @@ class WebServer {
                         <i class="fas fa-ticket-alt text-blue-500 mr-3"></i>
                         Dashboard de Tickets
                     </h1>
-                    <p class="text-gray-600">Visualize e gerencie todos os tickets fechados do seu servidor Discord</p>
+                    <p class="text-gray-600">Visualize e gerencie todos os tickets fechados Policia Civil</p>
                     <div class="mt-2 text-sm text-gray-500">
                         <i class="fas fa-globe mr-1"></i>
                         <span>https://ticketdashboards.onrender.com</span>
