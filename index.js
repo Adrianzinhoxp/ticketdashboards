@@ -1130,18 +1130,27 @@ async function handleTicketSelection(interaction) {
     })
   }
 
-  // Bloquear esta interação
+  // RESPONDER IMEDIATAMENTE para evitar timeout
+  try {
+    await safeReply(interaction, {
+      content: "🔄 Criando seu ticket, aguarde...",
+      flags: MessageFlags.Ephemeral,
+    })
+  } catch (replyError) {
+    console.error("Erro ao responder interação inicial:", replyError)
+    // Se não conseguir responder, a interação já expirou
+    return
+  }
+
+  // Bloquear esta interação APÓS responder
   processingInteractions.set(interactionKey, Date.now())
 
-  // Limpar o bloqueio após 30 segundos (caso algo dê errado)
+  // Limpar o bloqueio após 30 segundos
   setTimeout(() => {
     processingInteractions.delete(interactionKey)
   }, 30000)
 
   try {
-    // Defer para evitar timeout
-    await interaction.deferReply({ ephemeral: true })
-
     const ticketConfig = {
       corregedoria: {
         name: "corregedoria",
@@ -1174,15 +1183,16 @@ async function handleTicketSelection(interaction) {
     // Verificar novamente se não criou um ticket enquanto processava
     if (activeTickets.has(userId)) {
       processingInteractions.delete(interactionKey)
-      return await interaction.editReply({
-        content: "❌ Você já possui um ticket aberto! Feche o ticket atual antes de abrir um novo.",
-      })
+      try {
+        await interaction.followUp({
+          content: "❌ Você já possui um ticket aberto! Feche o ticket atual antes de abrir um novo.",
+          flags: MessageFlags.Ephemeral,
+        })
+      } catch (followUpError) {
+        console.error("Erro ao enviar followUp:", followUpError)
+      }
+      return
     }
-
-    // Mostrar progresso
-    await interaction.editReply({
-      content: "🔄 Criando seu ticket, aguarde...",
-    })
 
     const ticketChannel = await interaction.guild.channels.create({
       name: `${config.emoji}${config.name}-${interaction.user.username}`,
@@ -1280,10 +1290,19 @@ Seja muito bem-vindo(a) ao seu ticket! Nossa equipe estará aqui para te ajudar 
       components: [buttonRow1, buttonRow2],
     })
 
-    // Atualizar a resposta original
-    await interaction.editReply({
-      content: `✅ Ticket criado com sucesso! Acesse: ${ticketChannel}`,
-    })
+    // Tentar enviar followUp com sucesso
+    try {
+      await interaction.followUp({
+        content: `✅ Ticket criado com sucesso! Acesse: ${ticketChannel}`,
+        flags: MessageFlags.Ephemeral,
+      })
+    } catch (followUpError) {
+      console.error("Erro ao enviar followUp de sucesso:", followUpError)
+      // Se não conseguir enviar followUp, enviar no canal do ticket
+      await ticketChannel.send({
+        content: `✅ ${interaction.user}, seu ticket foi criado com sucesso!`,
+      })
+    }
 
     // Remover do processamento
     processingInteractions.delete(interactionKey)
@@ -1299,12 +1318,13 @@ Seja muito bem-vindo(a) ao seu ticket! Nossa equipe estará aqui para te ajudar 
     }
 
     try {
-      await interaction.editReply({
+      await interaction.followUp({
         content: "❌ Erro ao criar o ticket. Verifique se o bot tem as permissões necessárias. Tente novamente.",
+        flags: MessageFlags.Ephemeral,
       })
-    } catch (editError) {
-      console.error("Erro ao editar resposta:", editError)
-      // Fallback para canal
+    } catch (followUpError) {
+      console.error("Erro ao enviar followUp de erro:", followUpError)
+      // Fallback para canal se possível
       if (interaction.channel) {
         await interaction.channel.send({
           content: `${interaction.user} ❌ Erro ao criar o ticket. Tente novamente.`,
@@ -1389,30 +1409,22 @@ async function showCloseTicketModal(interaction) {
 }
 
 async function handleCloseTicketModal(interaction) {
-  // Defer imediatamente para evitar timeout
-  try {
-    await interaction.deferReply()
-  } catch (deferError) {
-    console.error("Erro ao defer interação:", deferError)
-    // Se não conseguir defer, tentar responder diretamente
-  }
-
   const reason = interaction.fields.getTextInputValue("reason")
   const ticketInfo = findTicketByChannel(interaction.channel.id)
 
   if (!ticketInfo) {
     return await safeReply(interaction, {
       content: "❌ Ticket não encontrado.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     })
   }
 
   const { userId: ticketUserId, ticket } = ticketInfo
 
   try {
-    // Mostrar progresso
+    // Responder imediatamente
     await safeReply(interaction, {
-      content: "🔄 Coletando mensagens do ticket...",
+      content: "🔄 Processando fechamento do ticket...",
     })
 
     const messages = await collectChannelMessages(interaction.channel)
@@ -1452,19 +1464,11 @@ async function handleCloseTicketModal(interaction) {
     activeTickets.delete(ticketUserId)
     console.log(`🗑️ Ticket removido do Map para usuário ${ticketUserId}`)
 
-    // Editar a resposta anterior
-    try {
-      await interaction.editReply({
-        content: "🔒 Ticket será fechado em 10 segundos...",
-        embeds: [logEmbed],
-      })
-    } catch (editError) {
-      // Se não conseguir editar, enviar nova mensagem
-      await interaction.channel.send({
-        content: "🔒 Ticket será fechado em 10 segundos...",
-        embeds: [logEmbed],
-      })
-    }
+    // Enviar mensagem final
+    await interaction.channel.send({
+      content: "🔒 Ticket será fechado em 10 segundos...",
+      embeds: [logEmbed],
+    })
 
     setTimeout(async () => {
       try {
@@ -1477,7 +1481,7 @@ async function handleCloseTicketModal(interaction) {
     console.error("Erro ao fechar ticket:", error)
     await safeReply(interaction, {
       content: "❌ Erro ao fechar o ticket. Tente novamente.",
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     })
   }
 }
