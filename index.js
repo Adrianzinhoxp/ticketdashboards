@@ -82,6 +82,46 @@ class Database {
     this.setupBackupSystem()
   }
 
+  loadConfigs() {
+    try {
+      if (fs.existsSync(this.CONFIG_FILE)) {
+        const data = fs.readFileSync(this.CONFIG_FILE, "utf8")
+        return JSON.parse(data)
+      }
+    } catch (error) {
+      console.error("Erro ao carregar configurações:", error)
+    }
+    return {}
+  }
+
+  loadClosedTickets() {
+    try {
+      if (fs.existsSync(this.TICKETS_FILE)) {
+        const data = fs.readFileSync(this.TICKETS_FILE, "utf8")
+        return JSON.parse(data)
+      }
+    } catch (error) {
+      console.error("Erro ao carregar tickets fechados:", error)
+    }
+    return []
+  }
+
+  saveConfigs() {
+    try {
+      fs.writeFileSync(this.CONFIG_FILE, JSON.stringify(this.configs, null, 2))
+    } catch (error) {
+      console.error("Erro ao salvar configurações:", error)
+    }
+  }
+
+  saveClosedTickets() {
+    try {
+      fs.writeFileSync(this.TICKETS_FILE, JSON.stringify(this.closedTickets, null, 2))
+    } catch (error) {
+      console.error("Erro ao salvar tickets fechados:", error)
+    }
+  }
+
   setupBackupSystem() {
     // Criar diretório de backup se não existir
     fs.ensureDirSync(this.BACKUP_DIR)
@@ -148,6 +188,15 @@ class Database {
     }
   }
 
+  setServerConfig(guildId, config) {
+    this.configs[guildId] = config
+    this.saveConfigs()
+  }
+
+  getServerConfig(guildId) {
+    return this.configs[guildId] || null
+  }
+
   addClosedTicket(ticketData) {
     // Adicionar timestamp de salvamento
     ticketData.savedAt = new Date().toISOString()
@@ -168,6 +217,14 @@ class Database {
     if (this.closedTickets.length % 50 === 0) {
       this.createBackup()
     }
+  }
+
+  getClosedTickets() {
+    return this.closedTickets
+  }
+
+  getTicketById(ticketId) {
+    return this.closedTickets.find((ticket) => ticket.id === ticketId)
   }
 
   // Método para recuperar backup
