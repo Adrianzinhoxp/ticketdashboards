@@ -45,7 +45,7 @@ class DiscloudMonitor {
       if (heapUsed > 400) {
         console.warn(`⚠️ Alto uso de memória: ${heapUsed}MB`)
       }
-    }, 300000) // Verifica a cada 5 minutos
+    }, 300000)
   }
 }
 
@@ -57,7 +57,7 @@ class AutoCleanup {
   startCleanup() {
     setInterval(() => {
       this.performCleanup()
-    }, 1800000) // 30 minutos
+    }, 1800000)
   }
 
   performCleanup() {
@@ -135,6 +135,7 @@ class Database {
       this.closedTickets = this.closedTickets.slice(0, 1000)
     }
     this.saveClosedTickets()
+    console.log(`📝 Ticket ${ticketData.id} salvo no dashboard`)
   }
 
   getClosedTickets() {
@@ -158,24 +159,6 @@ class WebServer {
   setupMiddleware() {
     this.app.use(cors())
     this.app.use(express.json())
-    // Configurar arquivos estáticos com múltiplos caminhos possíveis
-    const publicPaths = [
-      path.join(__dirname, "public"),
-      path.join(process.cwd(), "public"),
-      path.join(__dirname, "..", "public"),
-    ]
-
-    // Tentar cada caminho até encontrar um que existe
-    let publicPath = path.join(__dirname, "public")
-    for (const testPath of publicPaths) {
-      if (fs.existsSync(testPath)) {
-        publicPath = testPath
-        break
-      }
-    }
-
-    console.log(`📁 Servindo arquivos estáticos de: ${publicPath}`)
-    this.app.use(express.static(publicPath))
   }
 
   setupRoutes() {
@@ -185,6 +168,7 @@ class WebServer {
         status: "OK",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        tickets: this.database.getClosedTickets().length,
       })
     })
 
@@ -192,6 +176,7 @@ class WebServer {
     this.app.get("/api/tickets", (req, res) => {
       try {
         const tickets = this.database.getClosedTickets()
+        console.log(`📊 API: Retornando ${tickets.length} tickets`)
         res.json(tickets)
       } catch (error) {
         console.error("Erro ao buscar tickets:", error)
@@ -234,30 +219,9 @@ class WebServer {
       }
     })
 
-    // Dashboard Route
+    // Dashboard Route - HTML completo
     this.app.get("/", (req, res) => {
-      const indexPaths = [
-        path.join(__dirname, "public", "index.html"),
-        path.join(process.cwd(), "public", "index.html"),
-        path.join(__dirname, "..", "public", "index.html"),
-      ]
-
-      let indexPath = path.join(__dirname, "public", "index.html")
-      for (const testPath of indexPaths) {
-        if (fs.existsSync(testPath)) {
-          indexPath = testPath
-          break
-        }
-      }
-
-      console.log(`📄 Servindo index.html de: ${indexPath}`)
-
-      if (fs.existsSync(indexPath)) {
-        res.sendFile(indexPath)
-      } else {
-        // Fallback: criar HTML inline se arquivo não existir
-        res.send(this.getFallbackHTML())
-      }
+      res.send(this.getCompleteHTML())
     })
 
     // 404 Handler
@@ -276,7 +240,7 @@ class WebServer {
     })
   }
 
-  getFallbackHTML() {
+  getCompleteHTML() {
     return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -285,22 +249,501 @@ class WebServer {
     <title>Dashboard de Tickets - Discord Bot</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .loading-spinner {
+            border: 4px solid #f3f4f6;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
 </head>
 <body class="bg-gray-50">
-    <div class="min-h-screen flex items-center justify-center">
-        <div class="text-center">
-            <i class="fas fa-ticket-alt text-6xl text-blue-500 mb-4"></i>
-            <h1 class="text-3xl font-bold text-gray-900 mb-2">Dashboard de Tickets</h1>
-            <p class="text-gray-600 mb-4">Sistema funcionando! Arquivos estáticos em carregamento...</p>
-            <div class="text-sm text-gray-500">
-                <p>API Status: <span class="text-green-500">✅ Online</span></p>
-                <p>Bot Status: <span class="text-green-500">✅ Conectado</span></p>
+    <div id="app" class="min-h-screen">
+        <!-- Loading -->
+        <div id="loading" class="flex items-center justify-center min-h-screen">
+            <div class="text-center">
+                <div class="loading-spinner mx-auto mb-4"></div>
+                <p class="text-gray-600">Carregando dashboard...</p>
             </div>
-            <button onclick="location.reload()" class="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
-                Recarregar
-            </button>
+        </div>
+
+        <!-- Main Content -->
+        <div id="content" class="hidden">
+            <div class="container mx-auto p-6">
+                <!-- Header -->
+                <div class="mb-8">
+                    <h1 class="text-3xl font-bold text-gray-900 mb-2">
+                        <i class="fas fa-ticket-alt text-blue-500 mr-3"></i>
+                        Dashboard de Tickets
+                    </h1>
+                    <p class="text-gray-600">Visualize e gerencie todos os tickets fechados do seu servidor Discord</p>
+                    <div class="mt-2 text-sm text-gray-500">
+                        <i class="fas fa-globe mr-1"></i>
+                        <span>https://ticketdashboards.onrender.com</span>
+                        <span class="ml-4">
+                            <i class="fas fa-sync-alt mr-1"></i>
+                            Última atualização: <span id="last-update">Carregando...</span>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Stats Cards -->
+                <div id="stats-cards" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <!-- Cards serão inseridos aqui via JavaScript -->
+                </div>
+
+                <!-- Filters -->
+                <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+                    <h3 class="text-lg font-semibold mb-4">
+                        <i class="fas fa-filter mr-2"></i>
+                        Filtros
+                    </h3>
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <div class="flex-1">
+                            <input 
+                                type="text" 
+                                id="search-input" 
+                                placeholder="Buscar por ID, título ou usuário..." 
+                                class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            >
+                        </div>
+                        <select id="type-filter" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                            <option value="all">Todos os tipos</option>
+                            <option value="corregedoria">Corregedoria</option>
+                            <option value="up_patente">Up de Patente</option>
+                            <option value="duvidas">Dúvidas</option>
+                        </select>
+                        <select id="status-filter" class="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                            <option value="all">Todos os status</option>
+                            <option value="resolved">Resolvido</option>
+                            <option value="approved">Aprovado</option>
+                            <option value="rejected">Rejeitado</option>
+                        </select>
+                        <button id="clear-filters" class="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors">
+                            <i class="fas fa-times mr-2"></i>
+                            Limpar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Tickets List -->
+                <div id="tickets-container">
+                    <!-- Tickets serão inseridos aqui via JavaScript -->
+                </div>
+
+                <!-- No Results -->
+                <div id="no-results" class="hidden bg-white rounded-lg shadow-md p-12 text-center">
+                    <i class="fas fa-search text-4xl text-gray-400 mb-4"></i>
+                    <h3 class="text-lg font-semibold mb-2">Nenhum ticket encontrado</h3>
+                    <p class="text-gray-600">Tente ajustar os filtros ou termos de busca para encontrar tickets.</p>
+                </div>
+
+                <!-- Empty State -->
+                <div id="empty-state" class="hidden bg-white rounded-lg shadow-md p-12 text-center">
+                    <i class="fas fa-ticket-alt text-4xl text-gray-400 mb-4"></i>
+                    <h3 class="text-lg font-semibold mb-2">Nenhum ticket fechado ainda</h3>
+                    <p class="text-gray-600">Os tickets fechados aparecerão aqui automaticamente.</p>
+                    <div class="mt-6 p-4 bg-blue-50 rounded-lg">
+                        <h4 class="font-semibold text-blue-900 mb-2">Como começar:</h4>
+                        <ol class="list-decimal list-inside text-sm text-blue-800 space-y-1">
+                            <li>Configure o bot no Discord: <code>/ticket-config #canal</code></li>
+                            <li>Crie o painel: <code>/ticket-panel</code></li>
+                            <li>Usuários podem abrir tickets</li>
+                            <li>Tickets fechados aparecerão aqui</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
+
+    <!-- Modal para visualizar transcript -->
+    <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-hidden">
+            <div class="p-6 border-b">
+                <div class="flex justify-between items-center">
+                    <h2 id="modal-title" class="text-xl font-bold"></h2>
+                    <button id="close-modal" class="text-gray-500 hover:text-gray-700">
+                        <i class="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+                <p id="modal-subtitle" class="text-gray-600 mt-1"></p>
+            </div>
+            <div id="modal-content" class="p-6 overflow-y-auto max-h-96">
+                <!-- Conteúdo do modal será inserido aqui -->
+            </div>
+            <div id="modal-footer" class="p-6 border-t bg-gray-50">
+                <!-- Footer do modal será inserido aqui -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class TicketDashboard {
+            constructor() {
+                this.tickets = []
+                this.filteredTickets = []
+                this.stats = {}
+                this.init()
+            }
+
+            async init() {
+                try {
+                    await this.loadData()
+                    this.setupEventListeners()
+                    this.render()
+                    this.hideLoading()
+                    this.updateLastUpdate()
+                } catch (error) {
+                    console.error("Erro na inicialização:", error)
+                    this.showError("Erro ao carregar o dashboard")
+                }
+            }
+
+            async loadData() {
+                try {
+                    console.log("Carregando dados...")
+                    
+                    const [ticketsResponse, statsResponse] = await Promise.all([
+                        fetch("/api/tickets"),
+                        fetch("/api/stats")
+                    ])
+
+                    this.tickets = await ticketsResponse.json()
+                    this.stats = await statsResponse.json()
+                    this.filteredTickets = [...this.tickets]
+
+                    console.log(\`Carregados \${this.tickets.length} tickets\`)
+                } catch (error) {
+                    console.error("Erro ao carregar dados:", error)
+                    this.tickets = []
+                    this.stats = { total: 0, byType: {}, byStatus: {} }
+                    this.filteredTickets = []
+                }
+            }
+
+            setupEventListeners() {
+                document.getElementById("search-input").addEventListener("input", () => this.applyFilters())
+                document.getElementById("type-filter").addEventListener("change", () => this.applyFilters())
+                document.getElementById("status-filter").addEventListener("change", () => this.applyFilters())
+                document.getElementById("clear-filters").addEventListener("click", () => this.clearFilters())
+                document.getElementById("close-modal").addEventListener("click", () => this.closeModal())
+                document.getElementById("modal").addEventListener("click", (e) => {
+                    if (e.target.id === "modal") this.closeModal()
+                })
+
+                // Atualização automática a cada 30 segundos
+                setInterval(() => {
+                    this.loadData().then(() => {
+                        this.applyFilters()
+                        this.updateLastUpdate()
+                    })
+                }, 30000)
+            }
+
+            applyFilters() {
+                const searchTerm = document.getElementById("search-input").value.toLowerCase()
+                const typeFilter = document.getElementById("type-filter").value
+                const statusFilter = document.getElementById("status-filter").value
+
+                this.filteredTickets = this.tickets.filter((ticket) => {
+                    const matchesSearch = 
+                        ticket.id.toLowerCase().includes(searchTerm) ||
+                        ticket.title.toLowerCase().includes(searchTerm) ||
+                        ticket.user.username.toLowerCase().includes(searchTerm)
+
+                    const matchesType = typeFilter === "all" || ticket.type === typeFilter
+                    const matchesStatus = statusFilter === "all" || ticket.status === statusFilter
+
+                    return matchesSearch && matchesType && matchesStatus
+                })
+
+                this.renderTickets()
+            }
+
+            clearFilters() {
+                document.getElementById("search-input").value = ""
+                document.getElementById("type-filter").value = "all"
+                document.getElementById("status-filter").value = "all"
+                this.filteredTickets = [...this.tickets]
+                this.renderTickets()
+            }
+
+            render() {
+                this.renderStats()
+                this.renderTickets()
+            }
+
+            renderStats() {
+                const container = document.getElementById("stats-cards")
+
+                const cards = [
+                    {
+                        title: "Total de Tickets",
+                        value: this.stats.total || 0,
+                        subtitle: "Tickets fechados",
+                        icon: "fas fa-ticket-alt",
+                        color: "blue",
+                    },
+                    {
+                        title: "Corregedoria",
+                        value: this.stats.byType?.corregedoria || 0,
+                        subtitle: "Questões disciplinares",
+                        icon: "fas fa-exclamation-triangle",
+                        color: "red",
+                    },
+                    {
+                        title: "Promoções",
+                        value: this.stats.byType?.up_patente || 0,
+                        subtitle: "Solicitações de up",
+                        icon: "fas fa-trophy",
+                        color: "yellow",
+                    },
+                    {
+                        title: "Dúvidas",
+                        value: this.stats.byType?.duvidas || 0,
+                        subtitle: "Esclarecimentos",
+                        icon: "fas fa-question-circle",
+                        color: "blue",
+                    },
+                ]
+
+                container.innerHTML = cards.map(card => \`
+                    <div class="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm font-medium text-gray-600">\${card.title}</p>
+                                <p class="text-2xl font-bold text-gray-900">\${card.value}</p>
+                                <p class="text-xs text-gray-500">\${card.subtitle}</p>
+                            </div>
+                            <div class="text-\${card.color}-500">
+                                <i class="\${card.icon} text-2xl"></i>
+                            </div>
+                        </div>
+                    </div>
+                \`).join("")
+            }
+
+            renderTickets() {
+                const container = document.getElementById("tickets-container")
+                const noResults = document.getElementById("no-results")
+                const emptyState = document.getElementById("empty-state")
+
+                noResults.classList.add("hidden")
+                emptyState.classList.add("hidden")
+
+                if (this.tickets.length === 0) {
+                    container.innerHTML = ""
+                    emptyState.classList.remove("hidden")
+                    return
+                }
+
+                if (this.filteredTickets.length === 0) {
+                    container.innerHTML = ""
+                    noResults.classList.remove("hidden")
+                    return
+                }
+
+                container.innerHTML = this.filteredTickets.map(ticket => {
+                    const typeConfig = this.getTypeConfig(ticket.type)
+                    const statusConfig = this.getStatusConfig(ticket.status)
+
+                    return \`
+                        <div class="bg-white rounded-lg shadow-md p-6 mb-4 hover:shadow-lg transition-shadow">
+                            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                                <div class="flex-1">
+                                    <div class="flex items-center gap-3 mb-2">
+                                        <div class="p-2 rounded-lg \${typeConfig.bgColor}">
+                                            <i class="\${typeConfig.icon} \${typeConfig.textColor}"></i>
+                                        </div>
+                                        <div>
+                                            <h3 class="font-semibold text-lg">\${ticket.title}</h3>
+                                            <p class="text-sm text-gray-500">ID: \${ticket.id}</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex flex-wrap items-center gap-4 text-sm text-gray-600">
+                                        <div class="flex items-center gap-1">
+                                            <i class="fas fa-user"></i>
+                                            <span>\${ticket.user.username}</span>
+                                        </div>
+                                        <div class="flex items-center gap-1">
+                                            <i class="fas fa-calendar"></i>
+                                            <span>\${this.formatDate(ticket.createdAt)}</span>
+                                        </div>
+                                        <div class="flex items-center gap-1">
+                                            <i class="fas fa-clock"></i>
+                                            <span>\${this.formatDuration(ticket.createdAt, ticket.closedAt)}</span>
+                                        </div>
+                                        <div class="flex items-center gap-1">
+                                            <i class="fas fa-comments"></i>
+                                            <span>\${ticket.messages?.length || 0} mensagens</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-3">
+                                    <span class="px-3 py-1 rounded-full text-sm font-medium \${typeConfig.badgeColor}">\${typeConfig.label}</span>
+                                    <span class="px-3 py-1 rounded-full text-sm font-medium \${statusConfig.badgeColor}">\${statusConfig.label}</span>
+                                    <button onclick="dashboard.openModal('\${ticket.id}')" class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors">
+                                        <i class="fas fa-eye mr-2"></i>
+                                        Ver Transcript
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    \`
+                }).join("")
+            }
+
+            async openModal(ticketId) {
+                const ticket = this.tickets.find(t => t.id === ticketId)
+                if (!ticket) return
+
+                const typeConfig = this.getTypeConfig(ticket.type)
+
+                document.getElementById("modal-title").innerHTML = \`
+                    <i class="\${typeConfig.icon} \${typeConfig.textColor} mr-2"></i>
+                    \${ticket.title}
+                \`
+
+                document.getElementById("modal-subtitle").textContent = 
+                    \`Ticket \${ticket.id} • \${ticket.user.username} • \${this.formatDate(ticket.createdAt)}\`
+
+                const messagesHtml = ticket.messages && ticket.messages.length > 0
+                    ? ticket.messages.map(message => \`
+                        <div class="flex gap-3 mb-4 \${message.isStaff ? "flex-row-reverse" : ""}">
+                            <div class="flex-shrink-0 w-8 h-8 rounded-full \${message.isStaff ? "bg-blue-500" : "bg-gray-500"} flex items-center justify-center text-white text-sm font-medium">
+                                \${message.author[0].toUpperCase()}
+                            </div>
+                            <div class="flex-1 \${message.isStaff ? "text-right" : ""}">
+                                <div class="flex items-center gap-2 mb-1 \${message.isStaff ? "justify-end" : ""}">
+                                    <span class="font-medium text-sm">\${message.author}</span>
+                                    \${message.isStaff ? '<span class="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded">Staff</span>' : ""}
+                                    <span class="text-xs text-gray-500">\${this.formatDate(message.timestamp)}</span>
+                                </div>
+                                <div class="p-3 rounded-lg \${message.isStaff ? "bg-blue-100 text-blue-900" : "bg-gray-100 text-gray-900"}">
+                                    \${message.content}
+                                </div>
+                            </div>
+                        </div>
+                    \`).join("")
+                    : '<div class="text-center text-gray-500 py-8"><i class="fas fa-comments text-2xl mb-2"></i><p>Nenhuma mensagem encontrada</p></div>'
+
+                document.getElementById("modal-content").innerHTML = messagesHtml
+
+                document.getElementById("modal-footer").innerHTML = \`
+                    <div class="flex items-center justify-between text-sm text-gray-600">
+                        <span>Fechado por: \${ticket.staff?.username || "Sistema"}</span>
+                        <span>Motivo: \${ticket.reason || "Não especificado"}</span>
+                    </div>
+                \`
+
+                document.getElementById("modal").classList.remove("hidden")
+            }
+
+            closeModal() {
+                document.getElementById("modal").classList.add("hidden")
+            }
+
+            getTypeConfig(type) {
+                const configs = {
+                    corregedoria: {
+                        label: "Corregedoria",
+                        icon: "fas fa-exclamation-triangle",
+                        bgColor: "bg-red-50",
+                        textColor: "text-red-700",
+                        badgeColor: "bg-red-500 text-white",
+                    },
+                    up_patente: {
+                        label: "Up de Patente",
+                        icon: "fas fa-trophy",
+                        bgColor: "bg-yellow-50",
+                        textColor: "text-yellow-700",
+                        badgeColor: "bg-yellow-500 text-white",
+                    },
+                    duvidas: {
+                        label: "Dúvidas",
+                        icon: "fas fa-question-circle",
+                        bgColor: "bg-blue-50",
+                        textColor: "text-blue-700",
+                        badgeColor: "bg-blue-500 text-white",
+                    },
+                }
+                return configs[type] || configs.duvidas
+            }
+
+            getStatusConfig(status) {
+                const configs = {
+                    resolved: { label: "Resolvido", badgeColor: "bg-green-500 text-white" },
+                    approved: { label: "Aprovado", badgeColor: "bg-blue-500 text-white" },
+                    rejected: { label: "Rejeitado", badgeColor: "bg-red-500 text-white" },
+                }
+                return configs[status] || configs.resolved
+            }
+
+            formatDate(dateString) {
+                try {
+                    return new Intl.DateTimeFormat("pt-BR", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                    }).format(new Date(dateString))
+                } catch (error) {
+                    return "Data inválida"
+                }
+            }
+
+            formatDuration(start, end) {
+                try {
+                    const diff = new Date(end).getTime() - new Date(start).getTime()
+                    const hours = Math.floor(diff / (1000 * 60 * 60))
+                    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))
+
+                    if (hours > 0) {
+                        return \`\${hours}h \${minutes}m\`
+                    }
+                    return \`\${minutes}m\`
+                } catch (error) {
+                    return "N/A"
+                }
+            }
+
+            updateLastUpdate() {
+                const now = new Date()
+                document.getElementById("last-update").textContent = this.formatDate(now.toISOString())
+            }
+
+            hideLoading() {
+                document.getElementById("loading").classList.add("hidden")
+                document.getElementById("content").classList.remove("hidden")
+            }
+
+            showError(message) {
+                console.error(message)
+                document.getElementById("loading").innerHTML = \`
+                    <div class="text-center">
+                        <i class="fas fa-exclamation-triangle text-red-500 text-4xl mb-4"></i>
+                        <h3 class="text-lg font-semibold text-gray-900 mb-2">Erro ao carregar</h3>
+                        <p class="text-gray-600">\${message}</p>
+                        <button onclick="location.reload()" class="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+                            Tentar novamente
+                        </button>
+                    </div>
+                \`
+            }
+        }
+
+        // Inicializar dashboard
+        const dashboard = new TicketDashboard()
+    </script>
 </body>
 </html>`
   }
