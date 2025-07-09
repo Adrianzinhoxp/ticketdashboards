@@ -789,35 +789,48 @@ const processingInteractions = new Map()
 
 // ==================== FUNÇÕES AUXILIARES ====================
 
-function findTicketByChannel(channelId) {
-  for (const [userId, ticketData] of activeTickets.entries()) {
-    if (ticketData.channelId === channelId) {
-      return { userId, ticket: ticketData }
-    }
-  }
-  return null
-}
-
 async function safeReply(interaction, options) {
   try {
-    if (interaction.deferred || interaction.replied) {
-      return await interaction.followUp(options)
-    } else {
-      return await interaction.reply(options)
-    }
-  } catch (error) {
-    console.error("Erro ao responder interação:", error)
-    if (interaction.channel) {
-      try {
+    // Verificar se a interação ainda é válida
+    if (!interaction || !interaction.isRepliable()) {
+      console.warn("⚠️ Interação não é mais válida, enviando mensagem no canal")
+      if (interaction.channel) {
         return await interaction.channel.send({
           content: options.content || "❌ Erro ao processar a interação.",
           embeds: options.embeds || [],
           components: options.components || [],
         })
-      } catch (channelError) {
-        console.error("Erro ao enviar mensagem no canal:", channelError)
+      }
+      return null
+    }
+
+    // Se já foi respondida ou deferida, usar followUp
+    if (interaction.deferred || interaction.replied) {
+      return await interaction.followUp(options)
+    }
+
+    // Tentar responder normalmente
+    return await interaction.reply(options)
+  } catch (error) {
+    console.error("Erro ao responder interação:", error)
+
+    // Se deu erro de interação desconhecida, tentar enviar no canal
+    if (error.code === 10062 || error.message.includes("Unknown interaction")) {
+      console.warn("⚠️ Interação expirou, enviando mensagem no canal")
+      if (interaction.channel) {
+        try {
+          return await interaction.channel.send({
+            content: options.content || "❌ A interação expirou, mas aqui está a resposta:",
+            embeds: options.embeds || [],
+            components: options.components || [],
+          })
+        } catch (channelError) {
+          console.error("Erro ao enviar mensagem no canal:", channelError)
+        }
       }
     }
+
+    return null
   }
 }
 
@@ -1126,11 +1139,8 @@ async function handleTicketSelection(interaction) {
   }, 30000)
 
   try {
-    // Responder imediatamente para mostrar que está processando
-    await safeReply(interaction, {
-      content: "🔄 Criando seu ticket, aguarde...",
-      flags: MessageFlags.Ephemeral,
-    })
+    // Defer para evitar timeout
+    await interaction.deferReply({ ephemeral: true })
 
     const ticketConfig = {
       corregedoria: {
@@ -1168,6 +1178,11 @@ async function handleTicketSelection(interaction) {
         content: "❌ Você já possui um ticket aberto! Feche o ticket atual antes de abrir um novo.",
       })
     }
+
+    // Mostrar progresso
+    await interaction.editReply({
+      content: "🔄 Criando seu ticket, aguarde...",
+    })
 
     const ticketChannel = await interaction.guild.channels.create({
       name: `${config.emoji}${config.name}-${interaction.user.username}`,
@@ -1289,10 +1304,12 @@ Seja muito bem-vindo(a) ao seu ticket! Nossa equipe estará aqui para te ajudar 
       })
     } catch (editError) {
       console.error("Erro ao editar resposta:", editError)
-      await safeReply(interaction, {
-        content: "❌ Erro ao criar o ticket. Tente novamente.",
-        flags: MessageFlags.Ephemeral,
-      })
+      // Fallback para canal
+      if (interaction.channel) {
+        await interaction.channel.send({
+          content: `${interaction.user} ❌ Erro ao criar o ticket. Tente novamente.`,
+        })
+      }
     }
   }
 }
@@ -1372,19 +1389,32 @@ async function showCloseTicketModal(interaction) {
 }
 
 async function handleCloseTicketModal(interaction) {
+  // Defer imediatamente para evitar timeout
+  try {
+    await interaction.deferReply()
+  } catch (deferError) {
+    console.error("Erro ao defer interação:", deferError)
+    // Se não conseguir defer, tentar responder diretamente
+  }
+
   const reason = interaction.fields.getTextInputValue("reason")
   const ticketInfo = findTicketByChannel(interaction.channel.id)
 
   if (!ticketInfo) {
     return await safeReply(interaction, {
       content: "❌ Ticket não encontrado.",
-      flags: MessageFlags.Ephemeral,
+      ephemeral: true,
     })
   }
 
   const { userId: ticketUserId, ticket } = ticketInfo
 
   try {
+    // Mostrar progresso
+    await safeReply(interaction, {
+      content: "🔄 Coletando mensagens do ticket...",
+    })
+
     const messages = await collectChannelMessages(interaction.channel)
 
     const closedTicketData = {
@@ -1422,10 +1452,19 @@ async function handleCloseTicketModal(interaction) {
     activeTickets.delete(ticketUserId)
     console.log(`🗑️ Ticket removido do Map para usuário ${ticketUserId}`)
 
-    await safeReply(interaction, {
-      content: "🔒 Ticket será fechado em 10 segundos...",
-      embeds: [logEmbed],
-    })
+    // Editar a resposta anterior
+    try {
+      await interaction.editReply({
+        content: "🔒 Ticket será fechado em 10 segundos...",
+        embeds: [logEmbed],
+      })
+    } catch (editError) {
+      // Se não conseguir editar, enviar nova mensagem
+      await interaction.channel.send({
+        content: "🔒 Ticket será fechado em 10 segundos...",
+        embeds: [logEmbed],
+      })
+    }
 
     setTimeout(async () => {
       try {
@@ -1437,8 +1476,8 @@ async function handleCloseTicketModal(interaction) {
   } catch (error) {
     console.error("Erro ao fechar ticket:", error)
     await safeReply(interaction, {
-      content: "❌ Erro ao fechar o ticket.",
-      flags: MessageFlags.Ephemeral,
+      content: "❌ Erro ao fechar o ticket. Tente novamente.",
+      ephemeral: true,
     })
   }
 }
@@ -1591,3 +1630,12 @@ client.login(CONFIG.TOKEN).catch((error) => {
   console.error("Erro:", error.message)
   process.exit(1)
 })
+
+function findTicketByChannel(channelId) {
+  for (const [userId, ticket] of activeTickets.entries()) {
+    if (ticket.channelId === channelId) {
+      return { userId, ticket }
+    }
+  }
+  return null
+}
