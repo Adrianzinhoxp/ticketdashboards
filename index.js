@@ -784,6 +784,9 @@ const client = new Client({
 const database = new Database()
 const activeTickets = new Map()
 
+// Sistema de bloqueio para evitar tickets duplicados
+const processingInteractions = new Map()
+
 // ==================== FUNÇÕES AUXILIARES ====================
 
 function findTicketByChannel(channelId) {
@@ -854,6 +857,39 @@ async function collectChannelMessages(channel) {
   return messages.reverse()
 }
 
+// Função de limpeza automática para casos extremos
+function cleanupOrphanedTickets() {
+  console.log("🧹 Executando limpeza de tickets órfãos...")
+
+  let cleaned = 0
+  for (const [userId, ticketData] of activeTickets.entries()) {
+    // Verificar se o canal ainda existe
+    const guild = client.guilds.cache.get(CONFIG.GUILD_ID)
+    if (guild) {
+      const channel = guild.channels.cache.get(ticketData.channelId)
+      if (!channel) {
+        activeTickets.delete(userId)
+        cleaned++
+        console.log(`🗑️ Removido ticket órfão do usuário ${userId}`)
+      }
+    }
+  }
+
+  // Limpar interações antigas (mais de 5 minutos)
+  const fiveMinutesAgo = Date.now() - 5 * 60 * 1000
+  let cleanedInteractions = 0
+  for (const [key, timestamp] of processingInteractions.entries()) {
+    if (timestamp < fiveMinutesAgo) {
+      processingInteractions.delete(key)
+      cleanedInteractions++
+    }
+  }
+
+  if (cleaned > 0 || cleanedInteractions > 0) {
+    console.log(`✅ Limpeza concluída: ${cleaned} tickets órfãos, ${cleanedInteractions} interações antigas`)
+  }
+}
+
 // ==================== EVENTOS DO BOT ====================
 
 client.once("ready", () => {
@@ -865,6 +901,9 @@ client.once("ready", () => {
   console.log(`🌐 Dashboard URL: ${dashboardUrl}`)
 
   DiscloudMonitor.startMemoryMonitoring()
+
+  // Limpeza automática a cada 10 minutos
+  setInterval(cleanupOrphanedTickets, 600000)
   new AutoCleanup()
 
   const webServer = new WebServer(database)
@@ -1060,7 +1099,17 @@ Para abrir um ticket, selecione o tipo de atendimento que você precisa no menu 
 async function handleTicketSelection(interaction) {
   const ticketType = interaction.values[0]
   const userId = interaction.user.id
+  const interactionKey = `${userId}-${ticketType}`
 
+  // Verificar se já está processando esta interação
+  if (processingInteractions.has(interactionKey)) {
+    return await safeReply(interaction, {
+      content: "⏳ Aguarde, seu ticket está sendo criado...",
+      flags: MessageFlags.Ephemeral,
+    })
+  }
+
+  // Verificar se já possui um ticket ativo
   if (activeTickets.has(userId)) {
     return await safeReply(interaction, {
       content: "❌ Você já possui um ticket aberto! Feche o ticket atual antes de abrir um novo.",
@@ -1068,36 +1117,58 @@ async function handleTicketSelection(interaction) {
     })
   }
 
-  const ticketConfig = {
-    corregedoria: {
-      name: "corregedoria",
-      title: "⚠️ Corregedoria",
-      titleMessage: "Ticket Criado - Corregedoria",
-      description: "Ticket para questões disciplinares e correções",
-      color: "#000000",
-      emoji: "⚠️",
-    },
-    up_patente: {
-      name: "up-patente",
-      title: "🏆 Up de Patente",
-      titleMessage: "Ticket Criado - Up de Patente",
-      description: "Ticket para solicitações de promoção",
-      color: "#000000",
-      emoji: "🏆",
-    },
-    duvidas: {
-      name: "duvidas",
-      title: "❓ Dúvidas",
-      titleMessage: "Ticket Criado - Dúvidas",
-      description: "Ticket para esclarecimentos gerais",
-      color: "#000000",
-      emoji: "❓",
-    },
-  }
+  // Bloquear esta interação
+  processingInteractions.set(interactionKey, Date.now())
 
-  const config = ticketConfig[ticketType]
+  // Limpar o bloqueio após 30 segundos (caso algo dê errado)
+  setTimeout(() => {
+    processingInteractions.delete(interactionKey)
+  }, 30000)
 
   try {
+    // Responder imediatamente para mostrar que está processando
+    await safeReply(interaction, {
+      content: "🔄 Criando seu ticket, aguarde...",
+      flags: MessageFlags.Ephemeral,
+    })
+
+    const ticketConfig = {
+      corregedoria: {
+        name: "corregedoria",
+        title: "⚠️ Corregedoria",
+        titleMessage: "Ticket Criado - Corregedoria",
+        description: "Ticket para questões disciplinares e correções",
+        color: "#000000",
+        emoji: "⚠️",
+      },
+      up_patente: {
+        name: "up-patente",
+        title: "🏆 Up de Patente",
+        titleMessage: "Ticket Criado - Up de Patente",
+        description: "Ticket para solicitações de promoção",
+        color: "#000000",
+        emoji: "🏆",
+      },
+      duvidas: {
+        name: "duvidas",
+        title: "❓ Dúvidas",
+        titleMessage: "Ticket Criado - Dúvidas",
+        description: "Ticket para esclarecimentos gerais",
+        color: "#000000",
+        emoji: "❓",
+      },
+    }
+
+    const config = ticketConfig[ticketType]
+
+    // Verificar novamente se não criou um ticket enquanto processava
+    if (activeTickets.has(userId)) {
+      processingInteractions.delete(interactionKey)
+      return await interaction.editReply({
+        content: "❌ Você já possui um ticket aberto! Feche o ticket atual antes de abrir um novo.",
+      })
+    }
+
     const ticketChannel = await interaction.guild.channels.create({
       name: `${config.emoji}${config.name}-${interaction.user.username}`,
       type: ChannelType.GuildText,
@@ -1127,6 +1198,7 @@ async function handleTicketSelection(interaction) {
       ],
     })
 
+    // Adicionar ao Map IMEDIATAMENTE após criar o canal
     activeTickets.set(userId, {
       channelId: ticketChannel.id,
       type: ticketType,
@@ -1137,6 +1209,8 @@ async function handleTicketSelection(interaction) {
         avatar: interaction.user.displayAvatarURL(),
       },
     })
+
+    console.log(`✅ Ticket criado para ${interaction.user.username} (${userId}) - Canal: ${ticketChannel.id}`)
 
     const welcomeEmbed = new EmbedBuilder()
       .setTitle(config.titleMessage)
@@ -1191,16 +1265,35 @@ Seja muito bem-vindo(a) ao seu ticket! Nossa equipe estará aqui para te ajudar 
       components: [buttonRow1, buttonRow2],
     })
 
-    await safeReply(interaction, {
+    // Atualizar a resposta original
+    await interaction.editReply({
       content: `✅ Ticket criado com sucesso! Acesse: ${ticketChannel}`,
-      flags: MessageFlags.Ephemeral,
     })
+
+    // Remover do processamento
+    processingInteractions.delete(interactionKey)
   } catch (error) {
     console.error("Erro ao criar ticket:", error)
-    await safeReply(interaction, {
-      content: "❌ Erro ao criar o ticket. Verifique se o bot tem as permissões necessárias.",
-      flags: MessageFlags.Ephemeral,
-    })
+
+    // Remover do processamento em caso de erro
+    processingInteractions.delete(interactionKey)
+
+    // Se adicionou ao activeTickets mas deu erro, remover
+    if (activeTickets.has(userId)) {
+      activeTickets.delete(userId)
+    }
+
+    try {
+      await interaction.editReply({
+        content: "❌ Erro ao criar o ticket. Verifique se o bot tem as permissões necessárias. Tente novamente.",
+      })
+    } catch (editError) {
+      console.error("Erro ao editar resposta:", editError)
+      await safeReply(interaction, {
+        content: "❌ Erro ao criar o ticket. Tente novamente.",
+        flags: MessageFlags.Ephemeral,
+      })
+    }
   }
 }
 
@@ -1327,6 +1420,7 @@ async function handleCloseTicketModal(interaction) {
       .setTimestamp()
 
     activeTickets.delete(ticketUserId)
+    console.log(`🗑️ Ticket removido do Map para usuário ${ticketUserId}`)
 
     await safeReply(interaction, {
       content: "🔒 Ticket será fechado em 10 segundos...",
