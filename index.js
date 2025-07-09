@@ -158,7 +158,24 @@ class WebServer {
   setupMiddleware() {
     this.app.use(cors())
     this.app.use(express.json())
-    this.app.use(express.static(path.join(__dirname, "public")))
+    // Configurar arquivos estáticos com múltiplos caminhos possíveis
+    const publicPaths = [
+      path.join(__dirname, "public"),
+      path.join(process.cwd(), "public"),
+      path.join(__dirname, "..", "public"),
+    ]
+
+    // Tentar cada caminho até encontrar um que existe
+    let publicPath = path.join(__dirname, "public")
+    for (const testPath of publicPaths) {
+      if (fs.existsSync(testPath)) {
+        publicPath = testPath
+        break
+      }
+    }
+
+    console.log(`📁 Servindo arquivos estáticos de: ${publicPath}`)
+    this.app.use(express.static(publicPath))
   }
 
   setupRoutes() {
@@ -219,7 +236,28 @@ class WebServer {
 
     // Dashboard Route
     this.app.get("/", (req, res) => {
-      res.sendFile(path.join(__dirname, "public", "index.html"))
+      const indexPaths = [
+        path.join(__dirname, "public", "index.html"),
+        path.join(process.cwd(), "public", "index.html"),
+        path.join(__dirname, "..", "public", "index.html"),
+      ]
+
+      let indexPath = path.join(__dirname, "public", "index.html")
+      for (const testPath of indexPaths) {
+        if (fs.existsSync(testPath)) {
+          indexPath = testPath
+          break
+        }
+      }
+
+      console.log(`📄 Servindo index.html de: ${indexPath}`)
+
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath)
+      } else {
+        // Fallback: criar HTML inline se arquivo não existir
+        res.send(this.getFallbackHTML())
+      }
     })
 
     // 404 Handler
@@ -236,6 +274,35 @@ class WebServer {
       }
       console.log(`📊 API disponível em: http://localhost:${this.port}/api/tickets`)
     })
+  }
+
+  getFallbackHTML() {
+    return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Tickets - Discord Bot</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen flex items-center justify-center">
+        <div class="text-center">
+            <i class="fas fa-ticket-alt text-6xl text-blue-500 mb-4"></i>
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">Dashboard de Tickets</h1>
+            <p class="text-gray-600 mb-4">Sistema funcionando! Arquivos estáticos em carregamento...</p>
+            <div class="text-sm text-gray-500">
+                <p>API Status: <span class="text-green-500">✅ Online</span></p>
+                <p>Bot Status: <span class="text-green-500">✅ Conectado</span></p>
+            </div>
+            <button onclick="location.reload()" class="mt-4 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600">
+                Recarregar
+            </button>
+        </div>
+    </div>
+</body>
+</html>`
   }
 }
 

@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
-    "build": "echo 'Build completed successfully'"
+    "build": "chmod +x build.sh && ./build.sh",
+    "postinstall": "mkdir -p public && echo 'Diretórios criados'"
   },
   "keywords": ["discord", "bot", "tickets", "javascript", "dashboard", "render"],
   "author": "Seu Nome",
