@@ -1,0 +1,30 @@
+[
+  {
+    "id": "TKT-1752035577719",
+    "type": "up_patente",
+    "title": "Up de Patente - adrianzinhoxp",
+    "user": {
+      "id": "815630200242569286",
+      "username": "adrianzinhoxp",
+      "avatar": "https://cdn.discordapp.com/avatars/815630200242569286/5f738ada2e4e534b715cfb378310ca02.webp"
+    },
+    "staff": {
+      "id": "815630200242569286",
+      "username": "adrianzinhoxp",
+      "avatar": "https://cdn.discordapp.com/avatars/815630200242569286/5f738ada2e4e534b715cfb378310ca02.webp"
+    },
+    "createdAt": "2025-07-09T04:32:51.867Z",
+    "closedAt": "2025-07-09T04:32:57.719Z",
+    "reason": "dasdasd",
+    "status": "approved",
+    "messages": [
+      {
+        "id": "1392362849883394048",
+        "author": "Policia Civil",
+        "content": "<@815630200242569286> <@&1388302256516104352>",
+        "timestamp": "2025-07-09T04:32:52.263Z",
+        "isStaff": false
+      }
+    ]
+  }
+]
